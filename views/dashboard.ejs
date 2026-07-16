@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Dashboard</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>Chat</h1>
+    <a href="/login.html">Logout</a>
+  </header>
+
+  <div class="main-wrapper">
+    <div class="sidebar">
+      <div class="sidebar-header">Chats</div>
+      <div id="userList"></div>
+    </div>
+
+    <div class="chat">
+      <div class="chat-header" id="chatWithHeader">
+        <div id="chatWith">Select a user</div>
+      </div>
+
+      <div class="messages" id="messages">
+        <div class="no-chat">Select a user to start chatting</div>
+      </div>
+
+      <div class="input-area">
+        <input type="text" id="messageInput" placeholder="Type a message..." />
+        <button id="sendBtn">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import {
+      loadPrivateKey,
+      importPrivateKey,
+      importPublicKey,
+      deriveAesKey,
+      encryptMessage,
+      decryptMessage,
+    } from './crypto.js';
+
+    const currentUser = {
+      username: `<%= username %>`,
+      userId: `<%= userId %>`,
+    };
+
+    let currentChatUser = null;
+    let currentAesKey = null;
+    let lastMessageId = null;
+    let pollingTimer = null;
+
+    // ---------- Users ----------
+
+    async function loadUsers() {
+      const res = await fetch(`/api/users?username=${encodeURIComponent(currentUser.username)}`);
+      const users = await res.json();
+      const list = document.getElementById('userList');
+      list.innerHTML = '';
+
+      users.forEach(u => {
+        const div = document.createElement('div');
+        div.className = 'user-item';
+        div.innerHTML = `<div class="name">${u.username}</div>`;
+        div.addEventListener('click', () => selectUser(u));
+        list.appendChild(div);
+      });
+    }
+
+    function highlightActiveUser() {
+      const items = document.querySelectorAll('.user-item');
+      items.forEach(item => {
+        const nameEl = item.querySelector('.name');
+        if (currentChatUser && nameEl && nameEl.textContent === currentChatUser.username) {
+          item.classList.add('active');
+        } else {
+          item.classList.remove('active');
+        }
+      });
+    }
+
+    async function selectUser(user) {
+      currentChatUser = user;
+      lastMessageId = null;
+      highlightActiveUser();
+
+      document.getElementById('chatWith').textContent = 'Chat with ' + user.username;
+      document.getElementById('messages').innerHTML = '<div class="no-chat">Loading messages...</div>';
+
+      const myPrivateBase64 = loadPrivateKey(currentUser.username);
+      const myPrivateKey = await importPrivateKey(myPrivateBase64);
+      const otherPublicKey = await importPublicKey(user.public_key);
+      currentAesKey = await deriveAesKey(myPrivateKey, otherPublicKey);
+
+      await loadMessages(true);
+
+      if (pollingTimer) clearInterval(pollingTimer);
+      pollingTimer = setInterval(() => {
+        if (currentChatUser) {
+          loadMessages(false);
+        }
+      }, 2000);
+    }
+
+    // ---------- Messages ----------
+
+    async function loadMessages(fullLoad = true) {
+      if (!currentChatUser) return;
+
+      const url = `/api/messages?user1=${encodeURIComponent(currentUser.username)}&user2=${encodeURIComponent(currentChatUser.username)}`;
+      const res = await fetch(url);
+      if (!res.ok) return;
+
+      const msgs = await res.json();
+      const container = document.getElementById('messages');
+
+      if (fullLoad) {
+        container.innerHTML = '';
+        lastMessageId = null;
+      }
+
+      let messagesToRender = msgs;
+      if (!fullLoad && lastMessageId != null) {
+        messagesToRender = msgs.filter(m => m.id > lastMessageId);
+      }
+
+      if (messagesToRender.length === 0) return;
+
+      for (const m of messagesToRender) {
+        let text = '';
+
+        try {
+          text = await decryptMessage(
+            { iv: m.iv, data: m.data },
+            currentAesKey
+          );
+        } catch (err) {
+          console.error('Decrypt error:', err);
+          text = '[Unable to decrypt]';
+        }
+
+        const div = document.createElement('div');
+        div.className = 'message ' + (m.sender_username === currentUser.username ? 'sent' : 'received');
+        div.innerHTML = `
+          <div><strong>${m.sender_username}:</strong> ${text}</div>
+          <div class="meta">${new Date(m.created_at).toLocaleTimeString()}</div>
+        `;
+        container.appendChild(div);
+
+        if (lastMessageId == null || m.id > lastMessageId) {
+          lastMessageId = m.id;
+        }
+      }
+
+      container.scrollTop = container.scrollHeight;
+    }
+
+    async function sendMessage() {
+      const input = document.getElementById('messageInput');
+      const text = input.value.trim();
+      if (!text || !currentChatUser || !currentAesKey) return;
+
+      const ciphertext = await encryptMessage(text, currentAesKey);
+
+      const res = await fetch('/api/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fromUsername: currentUser.username,
+          toUsername: currentChatUser.username,
+          ciphertext,
+        }),
+      });
+
+      const body = await res.json();
+
+      if (!res.ok) {
+        alert('Failed to send message: ' + (body.details || body.error || 'Unknown error'));
+        return;
+      }
+
+      input.value = '';
+      await loadMessages(true);
+    }
+
+    // ---------- Events ----------
+
+    document.getElementById('sendBtn').addEventListener('click', sendMessage);
+    document.getElementById('messageInput').addEventListener('keypress', e => {
+      if (e.key === 'Enter') sendMessage();
+    });
+
+    // ---------- Init ----------
+
+    loadUsers();
+  </script>
+</body>
+</html>

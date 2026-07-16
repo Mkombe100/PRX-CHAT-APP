@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Sign Up</title>
+</head>
+<body>
+  <h1>Sign Up</h1>
+  <form method="POST" action="/signup" id="signupForm">
+    <label>Username: <input type="text" name="username" required></label><br><br>
+    <label>Password: <input type="password" name="password" required></label><br><br>
+    <button type="submit">Sign Up</button>
+  </form>
+  <p>Already have an account? <a href="/login.html">Login</a></p>
+
+  <script type="module">
+    import { generateKeyPair, savePrivateKey } from './crypto.js';
+
+    const form = document.getElementById('signupForm');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      const username = form.username.value.trim();
+      const password = form.password.value;
+
+      // Generate E2EE keys
+      const { publicBase64, privateBase64 } = await generateKeyPair();
+
+      // Store private key locally
+      savePrivateKey(username, privateBase64);
+
+      // Send to server
+      const res = await fetch('/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          username,
+          password,
+          publicKey: publicBase64,
+        }),
+      });
+
+      if (res.ok) {
+        window.location.href = '/login.html';
+      } else {
+        const text = await res.text();
+        alert('Signup failed: ' + text);
+      }
+    });
+  </script>
+</body>
+</html>
